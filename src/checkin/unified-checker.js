@@ -595,7 +595,7 @@ class UnifiedAnyRouterChecker {
 
 
 		// 优先检查是否有 session 和 api_user/account_id
-		const hasSession = accountInfo.session && (accountInfo.account_id || accountInfo.api_user);
+		const hasSession = accountInfo.platform_type !== "agentrouter" && accountInfo.session && (accountInfo.account_id || accountInfo.api_user);
 
 		if (hasSession) {
 			console.log(`[检测] ${accountName}: 发现有效的 Session，将使用 Session 签到`);
@@ -786,7 +786,8 @@ if (isMainModule) {
 			// const userId = "69aba9e3db447c164c0ff80d"; //hezuo
 			// const userId = "69b4cf81f7ac1a41a13b8981"; //hezuo2
 			// 使用 getAccountList 获取指定用户的账号列表
-			const apiResult = await getAccountList({ user_id: userId, account_type: 4 });
+			// const apiResult = await getAccountList({ user_id: userId, account_type: 4 });
+			const apiResult = await getAccountList({ user_id: userId});
 
 			// 注释掉原有的 getCheckinableAccounts 方式
 			// const apiResult = await getCheckinableAccounts();
@@ -795,10 +796,9 @@ if (isMainModule) {
 				console.error(`[错误] 获取账号列表失败: ${apiResult.error}`);
 				process.exit(1);
 			}
+			// const accounts = apiResult.data
 
-			const accounts = apiResult.data
-
-			// const accounts = apiResult.data.filter(account => account.username === 'k3vnor7sre');
+			const accounts = apiResult.data.filter(account => account.username === 'wangjinggq5m');
 			console.log(`[成功] 获取到 ${accounts.length} 个账号`);
 
 			// accounts.forEach(item=>{

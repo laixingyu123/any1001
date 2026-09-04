@@ -55,6 +55,26 @@ class AnyRouterGitHubSignIn {
 	}
 
 	/**
+	 * 等待页面 URL 满足条件（等待跳转完成）
+	 * 网络慢时页面跳转可能远慢于固定延迟，用 URL 轮询等待替代固定等待，避免误判失败
+	 * @param {Object} page - Playwright page 对象
+	 * @param {Function|string} matcher - 匹配函数 (url: URL) => boolean，或期望包含的 URL 片段
+	 * @param {number} timeout - 最大等待时间（毫秒），超时后放弃等待并返回当前 URL
+	 * @returns {string} - 等待结束后的当前 URL
+	 */
+	async waitForUrl(page, matcher, timeout = 15000) {
+		const predicate = typeof matcher === 'string'
+			? (url) => url.href.includes(matcher)
+			: matcher;
+		try {
+			await page.waitForURL(predicate, { timeout });
+		} catch (e) {
+			console.log(`[等待] 等待页面跳转超时（${timeout / 1000}秒），当前 URL: ${page.url()}`);
+		}
+		return page.url();
+	}
+
+	/**
 	 * 获取令牌列表
 	 * @param {Object} page - Playwright page 对象
 	 * @param {string} apiUser - API User ID
@@ -556,7 +576,8 @@ class AnyRouterGitHubSignIn {
 								await this.randomDelay(50, 100);
 							}
 
-							await this.randomDelay(3000, 5000);
+							// 网络慢时固定延迟可能等不到跳转完成，轮询等待 URL 离开 2FA 验证页
+							await this.waitForUrl(page, (url) => !url.href.includes('/sessions/two-factor'));
 
 							// 如果验证码输入后页面未自动跳转，尝试点击提交按钮
 							if (page.url().includes('/sessions/two-factor')) {
@@ -564,7 +585,8 @@ class AnyRouterGitHubSignIn {
 								const isVerifyVisible = await verifyButton.isVisible().catch(() => false);
 								if (isVerifyVisible) {
 									await verifyButton.click();
-									await this.randomDelay(3000, 5000);
+									// 等待提交后跳转完成
+									await this.waitForUrl(page, (url) => !url.href.includes('/sessions/two-factor'));
 								}
 							}
 						}
@@ -572,6 +594,11 @@ class AnyRouterGitHubSignIn {
 						// 处理二次 2FA 验证 (Verify 2FA now)
 						// 这种情况发生在点击 Verify 2FA now 按钮后，需要再次验证 TOTP
 						if (page.url().includes('login/oauth/authorize')) {
+							// 网络慢时 authorize 页面可能仍在加载，按钮未渲染会被误判为不需要二次验证，先等待加载完成
+							await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
+								console.log('[等待] authorize 页面加载超时，继续检查页面状态');
+							});
+
 							// 检查是否有 "Verify 2FA now" 按钮
 							const verify2faNowButton = page.locator('button', { hasText: 'Verify 2FA now' });
 							const isVerify2faVisible = await verify2faNowButton.isVisible().catch(() => false);
@@ -579,8 +606,8 @@ class AnyRouterGitHubSignIn {
 							if (isVerify2faVisible) {
 								console.log('[2FA] 检测到需要二次两步验证，点击 Verify 2FA now...');
 								await verify2faNowButton.click();
-								// await page.waitForLoadState('networkidle');
-								await this.randomDelay(2000, 3000);
+								// 网络慢时跳转到二次验证页面可能较慢，等待页面到达
+								await this.waitForUrl(page, 'two_factor_checkup', 15000);
 
 								console.log('当前url:', page.url());
 								// 检查是否进入了 two_factor_checkup 页面
@@ -600,9 +627,12 @@ class AnyRouterGitHubSignIn {
 
 									console.log(`[2FA] 生成新的验证码: ${newTotpCode}`);
 
-									// 输入新的验证码
+									// 输入新的验证码（网络慢时输入框可能还在加载，先等待其出现）
 									const checkupInput = page.locator('input[name="app_otp"]');
-									if (await checkupInput.isVisible()) {
+									await checkupInput.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {
+										console.log('[2FA] 未找到二次验证码输入框');
+									});
+									if (await checkupInput.isVisible().catch(() => false)) {
 										await checkupInput.click();
 										await this.randomDelay(300, 600);
 										for (const char of newTotpCode) {
@@ -625,13 +655,16 @@ class AnyRouterGitHubSignIn {
 										await doneButton.waitFor({ state: 'visible', timeout: 15000 });
 										console.log('[2FA] 二次验证通过，点击 Done...');
 										await doneButton.click();
-										await this.randomDelay(3000, 5000);
+										// 网络慢时固定延迟可能等不到跳转完成，等待离开二次验证检查页面
+										await this.waitForUrl(page, (url) => !url.href.includes('two_factor_checkup'), 20000);
 									} catch (e) {
 										console.log('[2FA] 未找到 Done 按钮或页面已自动跳转');
 									}
 								}
 							}
+
 						}
+
 
 						// 处理「信任此设备」页面
 						if (page.url().includes('/sessions/trusted-device')) {
@@ -639,11 +672,18 @@ class AnyRouterGitHubSignIn {
 							const skipButton = page.locator('input.btn-link[type="submit"][value="Don\'t ask again for this browser"]');
 							await skipButton.waitFor({ timeout: 10000 });
 							await skipButton.click();
-							await this.randomDelay(3000, 5000);
+							// 网络慢时固定延迟可能等不到跳转完成，等待离开信任设备页面
+							await this.waitForUrl(page, (url) => !url.href.includes('/sessions/trusted-device'));
 						}
+						
+
+						// 网络慢时页面可能仍在 2FA 验证页等待跳转，等待跳转结果后再判定
+						await this.waitForUrl(page, (url) => !url.href.includes('/sessions/two-factor'), 20000);
 
 						const finalTotpUrl = page.url();
-						if (finalTotpUrl.includes('/sessions/two-factor') || finalTotpUrl.includes('/login')) {
+						// 注意：login/oauth/authorize 本身包含 /login 子串，属于正常授权流程而非登录失败，必须排除
+						const backToLogin = finalTotpUrl.includes('/login') && !finalTotpUrl.includes('login/oauth/authorize');
+						if (finalTotpUrl.includes('/sessions/two-factor') || backToLogin) {
 							// OAuth 检测到封禁导致重定向到登录页，不算 2FA 失败
 							if (oauthBannedMessage) {
 								console.log(`[2FA] 两步验证通过，但账号已被封禁: ${oauthBannedMessage}`);
